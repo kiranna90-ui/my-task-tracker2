@@ -155,6 +155,27 @@ function reviveState(raw: unknown): TrackerState {
   }
 }
 
+
+function readStoredState(): TrackerState | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const stored = window.localStorage.getItem(STORAGE_KEY)
+    if (!stored) return null
+    return reviveState(JSON.parse(stored))
+  } catch {
+    return null
+  }
+}
+
+function writeStoredState(state: TrackerState) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+  } catch {
+    /* ignore quota errors */
+  }
+}
+
 function stateFromDb(tasks: DbTask[], pinnedTasks: DbPinnedTask[], completions: DbPinnedCompletion[]): TrackerState {
   const base = createInitialState()
   const tasksByDate: TrackerState['tasksByDate'] = {}
@@ -237,23 +258,35 @@ export function useTracker() {
       setLoading(true)
       setSyncError(null)
 
+      const storedState = readStoredState()
+      if (storedState && !cancelled) {
+        setState((prev) => ({
+          ...storedState,
+          view: prev.view,
+          selectedDate: storedState.selectedDate ?? prev.selectedDate,
+          completedAlerts: storedState.completedAlerts ?? prev.completedAlerts,
+        }))
+      }
+
       if (isSupabaseConfigured) {
         try {
           const remoteState = applyCompletionCache(await loadFromSupabase(), readCompletionCache())
           if (!cancelled) {
-            setState((prev) => ({ ...remoteState, view: prev.view, selectedDate: prev.selectedDate, completedAlerts: prev.completedAlerts }))
+            setState((prev) => {
+              const next = {
+                ...remoteState,
+                view: prev.view,
+                selectedDate: prev.selectedDate,
+                completedAlerts: Array.from(new Set([...remoteState.completedAlerts, ...prev.completedAlerts])),
+              }
+              writeStoredState(next)
+              return next
+            })
           }
         } catch (error) {
           console.error(error)
           const message = error instanceof Error ? error.message : 'Unknown error'
           if (!cancelled) setSyncError(`Не получилось загрузить задачи из Supabase: ${message}`)
-        }
-      } else {
-        try {
-          const stored = localStorage.getItem(STORAGE_KEY)
-          if (stored && !cancelled) setState(reviveState(JSON.parse(stored)))
-        } catch {
-          /* ignore corrupt storage */
         }
       }
 
@@ -270,15 +303,56 @@ export function useTracker() {
     }
   }, [])
 
-  // Local fallback only when Supabase variables are not configured.
+  // Always keep a local copy. It prevents a refresh from showing empty progress
+  // while Supabase is still loading or temporarily unavailable.
   useEffect(() => {
-    if (!hydrated || isSupabaseConfigured) return
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-    } catch {
-      /* ignore quota errors */
-    }
+    if (!hydrated) return
+    writeStoredState(state)
   }, [state, hydrated])
+
+  // Keep open tabs/devices fresh when Supabase Realtime is enabled for the project.
+  useEffect(() => {
+    if (!hydrated || !supabase) return
+    const client = supabase
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const refreshFromRemote = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(async () => {
+        try {
+          const remoteState = applyCompletionCache(await loadFromSupabase(), readCompletionCache())
+          if (cancelled) return
+          setState((prev) => {
+            const next = {
+              ...remoteState,
+              view: prev.view,
+              selectedDate: prev.selectedDate,
+              completedAlerts: Array.from(new Set([...remoteState.completedAlerts, ...prev.completedAlerts])),
+            }
+            writeStoredState(next)
+            return next
+          })
+          setSyncError(null)
+        } catch (error) {
+          console.error(error)
+        }
+      }, 250)
+    }
+
+    const channel = client
+      .channel('task-tracker-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, refreshFromRemote)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pinned_tasks' }, refreshFromRemote)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pinned_completion' }, refreshFromRemote)
+      .subscribe()
+
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+      client.removeChannel(channel)
+    }
+  }, [hydrated])
 
   const update = useCallback((producer: (prev: TrackerState) => TrackerState) => {
     setState(producer)
