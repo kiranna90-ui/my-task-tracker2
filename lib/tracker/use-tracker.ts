@@ -40,6 +40,25 @@ type DbPinnedCompletion = {
   completed: boolean | null
 }
 
+
+function getErrorMessage(error: unknown): string {
+  if (!error) return 'неизвестная ошибка'
+  if (typeof error === 'string') return error
+  if (error instanceof Error) return error.message
+  if (typeof error === 'object') {
+    const e = error as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown }
+    const parts = [e.message, e.details, e.hint, e.code]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    if (parts.length > 0) return parts.join(' | ')
+    try {
+      return JSON.stringify(error)
+    } catch {
+      return 'неизвестная ошибка'
+    }
+  }
+  return 'неизвестная ошибка'
+}
+
 const emptyCategoryMap = () => ({ personal: [], work: [], family: [] } as Record<CategoryId, Task[]>)
 const emptyPinnedMap = () => ({ personal: [], work: [], family: [] } as Record<CategoryId, PinnedTask[]>)
 
@@ -157,7 +176,7 @@ export function useTracker() {
           if (!cancelled) setState((prev) => ({ ...remoteState, view: prev.view, selectedDate: prev.selectedDate }))
         } catch (error) {
           console.error(error)
-          if (!cancelled) setSyncError('Не получилось загрузить задачи из Supabase')
+          if (!cancelled) setSyncError(`Не получилось загрузить задачи из Supabase: ${getErrorMessage(error)}`)
         }
       } else {
         try {
@@ -197,7 +216,7 @@ export function useTracker() {
 
   const reportError = useCallback((error: unknown) => {
     console.error(error)
-    setSyncError('Не получилось сохранить изменения. Обнови страницу и попробуй ещё раз.')
+    setSyncError(`Не получилось сохранить изменения: ${getErrorMessage(error)}`)
   }, [])
 
   const getUnpinned = useCallback(
