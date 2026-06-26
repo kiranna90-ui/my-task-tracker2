@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { supabase, isSupabaseConfigured } from '@/lib/supabase-client'
 import {
   CATEGORIES,
   DEFAULT_SUGGESTIONS,
@@ -15,12 +16,37 @@ import { parseTaskInput, uid } from './parse'
 
 const STORAGE_KEY = 'my-task-tracker:v1'
 
-const emptyCategoryMap = () => ({ personal: [], work: [], family: [] })
+type DbTask = {
+  id: string
+  title: string
+  task_date: string
+  task_time: string | null
+  category: CategoryId
+  completed: boolean | null
+  sort_order: number | null
+}
+
+type DbPinnedTask = {
+  id: string
+  title: string
+  task_time: string | null
+  category: CategoryId
+  sort_order: number | null
+}
+
+type DbPinnedCompletion = {
+  task_date: string
+  pinned_task_id: string
+  completed: boolean | null
+}
+
+const emptyCategoryMap = () => ({ personal: [], work: [], family: [] } as Record<CategoryId, Task[]>)
+const emptyPinnedMap = () => ({ personal: [], work: [], family: [] } as Record<CategoryId, PinnedTask[]>)
 
 function createInitialState(): TrackerState {
   return {
     tasksByDate: {},
-    pinned: emptyCategoryMap(),
+    pinned: emptyPinnedMap(),
     pinnedCompletion: {},
     suggestions: {
       personal: [...DEFAULT_SUGGESTIONS.personal],
@@ -43,10 +69,63 @@ function reviveState(raw: unknown): TrackerState {
     pinnedCompletion: r.pinnedCompletion ?? base.pinnedCompletion,
     suggestions: { ...base.suggestions, ...(r.suggestions ?? {}) },
     view: r.view === 'week' || r.view === 'day' ? r.view : base.view,
-    // Always start focused on today on reload but keep persisted if present
     selectedDate: r.selectedDate ?? base.selectedDate,
     completedAlerts: r.completedAlerts ?? base.completedAlerts,
   }
+}
+
+function stateFromDb(tasks: DbTask[], pinnedTasks: DbPinnedTask[], completions: DbPinnedCompletion[]): TrackerState {
+  const base = createInitialState()
+  const tasksByDate: TrackerState['tasksByDate'] = {}
+  const pinned = emptyPinnedMap()
+  const pinnedCompletion: TrackerState['pinnedCompletion'] = {}
+
+  for (const row of [...tasks].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))) {
+    const dateKey = row.task_date
+    const category = row.category
+    if (!tasksByDate[dateKey]) tasksByDate[dateKey] = emptyCategoryMap()
+    tasksByDate[dateKey][category].push({
+      id: row.id,
+      title: row.title,
+      time: row.task_time,
+      completed: !!row.completed,
+    })
+  }
+
+  for (const row of [...pinnedTasks].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))) {
+    pinned[row.category].push({
+      id: row.id,
+      title: row.title,
+      time: row.task_time,
+    })
+  }
+
+  for (const row of completions) {
+    if (!pinnedCompletion[row.task_date]) pinnedCompletion[row.task_date] = {}
+    pinnedCompletion[row.task_date][row.pinned_task_id] = !!row.completed
+  }
+
+  return { ...base, tasksByDate, pinned, pinnedCompletion }
+}
+
+async function loadFromSupabase(): Promise<TrackerState> {
+  if (!supabase) return createInitialState()
+
+  const [tasksResult, pinnedResult, completionResult] = await Promise.all([
+    supabase.from('tasks').select('id,title,task_date,task_time,category,completed,sort_order').order('task_date').order('sort_order'),
+    supabase.from('pinned_tasks').select('id,title,task_time,category,sort_order').order('sort_order'),
+    supabase.from('pinned_completion').select('task_date,pinned_task_id,completed'),
+  ])
+
+  if (tasksResult.error) throw tasksResult.error
+  if (pinnedResult.error) throw pinnedResult.error
+  if (completionResult.error) throw completionResult.error
+
+  return stateFromDb(
+    (tasksResult.data ?? []) as DbTask[],
+    (pinnedResult.data ?? []) as DbPinnedTask[],
+    (completionResult.data ?? []) as DbPinnedCompletion[],
+  )
 }
 
 export interface DayTask extends Task {
@@ -61,22 +140,50 @@ export interface ModalInfo {
 export function useTracker() {
   const [state, setState] = useState<TrackerState>(createInitialState)
   const [hydrated, setHydrated] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [syncError, setSyncError] = useState<string | null>(null)
   const [modal, setModal] = useState<ModalInfo | null>(null)
 
-  // Load from localStorage once on the client
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY)
-      if (stored) setState(reviveState(JSON.parse(stored)))
-    } catch {
-      /* ignore corrupt storage */
+    let cancelled = false
+
+    async function load() {
+      setLoading(true)
+      setSyncError(null)
+
+      if (isSupabaseConfigured) {
+        try {
+          const remoteState = await loadFromSupabase()
+          if (!cancelled) setState((prev) => ({ ...remoteState, view: prev.view, selectedDate: prev.selectedDate }))
+        } catch (error) {
+          console.error(error)
+          if (!cancelled) setSyncError('Не получилось загрузить задачи из Supabase')
+        }
+      } else {
+        try {
+          const stored = localStorage.getItem(STORAGE_KEY)
+          if (stored && !cancelled) setState(reviveState(JSON.parse(stored)))
+        } catch {
+          /* ignore corrupt storage */
+        }
+      }
+
+      if (!cancelled) {
+        setHydrated(true)
+        setLoading(false)
+      }
     }
-    setHydrated(true)
+
+    load()
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
-  // Persist
+  // Local fallback only when Supabase variables are not configured.
   useEffect(() => {
-    if (!hydrated) return
+    if (!hydrated || isSupabaseConfigured) return
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
     } catch {
@@ -88,16 +195,16 @@ export function useTracker() {
     setState(producer)
   }, [])
 
-  /* ------------------------------ getters ------------------------------ */
+  const reportError = useCallback((error: unknown) => {
+    console.error(error)
+    setSyncError('Не получилось сохранить изменения. Обнови страницу и попробуй ещё раз.')
+  }, [])
 
   const getUnpinned = useCallback(
-    (category: CategoryId, dateKey: string): Task[] => {
-      return state.tasksByDate[dateKey]?.[category] ?? []
-    },
+    (category: CategoryId, dateKey: string): Task[] => state.tasksByDate[dateKey]?.[category] ?? [],
     [state.tasksByDate],
   )
 
-  // Pinned tasks rendered for a specific day (completion is per-day)
   const getPinnedForDay = useCallback(
     (category: CategoryId, dateKey: string): DayTask[] => {
       const completion = state.pinnedCompletion[dateKey] ?? {}
@@ -112,7 +219,6 @@ export function useTracker() {
     [state.pinned, state.pinnedCompletion],
   )
 
-  // All visible tasks for a day (pinned first, then unpinned)
   const getDayTasks = useCallback(
     (category: CategoryId, dateKey: string): DayTask[] => {
       const pinned = getPinnedForDay(category, dateKey)
@@ -122,8 +228,6 @@ export function useTracker() {
     [getPinnedForDay, getUnpinned],
   )
 
-  /* ------------------------------ mutations ------------------------------ */
-
   const learnSuggestion = (prev: TrackerState, category: CategoryId, title: string): string[] => {
     const list = prev.suggestions[category]
     const exists = list.some((s) => s.toLowerCase() === title.toLowerCase())
@@ -132,108 +236,116 @@ export function useTracker() {
   }
 
   const addTaskForDate = useCallback(
-    (category: CategoryId, dateKey: string, raw: string) => {
+    async (category: CategoryId, dateKey: string, raw: string) => {
       const { time, title } = parseTaskInput(raw)
       if (!title) return
+      const tempId = uid()
+      const sortOrder = Date.now()
+      const newTask: Task = { id: tempId, title, time, completed: false }
+
       update((prev) => {
         const day = prev.tasksByDate[dateKey] ?? emptyCategoryMap()
-        const newTask: Task = { id: uid(), title, time, completed: false }
+        return {
+          ...prev,
+          tasksByDate: { ...prev.tasksByDate, [dateKey]: { ...day, [category]: [...day[category], newTask] } },
+          suggestions: { ...prev.suggestions, [category]: learnSuggestion(prev, category, title) },
+        }
+      })
+
+      if (!supabase) return
+      const { data, error } = await supabase
+        .from('tasks')
+        .insert({ title, task_date: dateKey, task_time: time, category, completed: false, sort_order: sortOrder })
+        .select('id')
+        .single()
+
+      if (error || !data) {
+        reportError(error)
+        return
+      }
+
+      update((prev) => {
+        const day = prev.tasksByDate[dateKey] ?? emptyCategoryMap()
         return {
           ...prev,
           tasksByDate: {
             ...prev.tasksByDate,
-            [dateKey]: { ...day, [category]: [...day[category], newTask] },
-          },
-          suggestions: {
-            ...prev.suggestions,
-            [category]: learnSuggestion(prev, category, title),
+            [dateKey]: {
+              ...day,
+              [category]: day[category].map((t) => (t.id === tempId ? { ...t, id: data.id } : t)),
+            },
           },
         }
       })
     },
-    [update],
+    [reportError, update],
   )
 
   const toggleTask = useCallback(
-    (category: CategoryId, dateKey: string, taskId: string, isPinned: boolean) => {
+    async (category: CategoryId, dateKey: string, taskId: string, isPinned: boolean) => {
+      let nextCompleted = false
       update((prev) => {
         if (isPinned) {
           const dayCompletion = prev.pinnedCompletion[dateKey] ?? {}
+          nextCompleted = !dayCompletion[taskId]
           return {
             ...prev,
-            pinnedCompletion: {
-              ...prev.pinnedCompletion,
-              [dateKey]: { ...dayCompletion, [taskId]: !dayCompletion[taskId] },
-            },
+            pinnedCompletion: { ...prev.pinnedCompletion, [dateKey]: { ...dayCompletion, [taskId]: nextCompleted } },
           }
         }
         const day = prev.tasksByDate[dateKey] ?? emptyCategoryMap()
+        const current = day[category].find((t) => t.id === taskId)
+        nextCompleted = !current?.completed
         return {
           ...prev,
           tasksByDate: {
             ...prev.tasksByDate,
-            [dateKey]: {
-              ...day,
-              [category]: day[category].map((t) =>
-                t.id === taskId ? { ...t, completed: !t.completed } : t,
-              ),
-            },
+            [dateKey]: { ...day, [category]: day[category].map((t) => (t.id === taskId ? { ...t, completed: nextCompleted } : t)) },
           },
         }
       })
+
+      if (!supabase) return
+      const result = isPinned
+        ? await supabase.from('pinned_completion').upsert({ task_date: dateKey, pinned_task_id: taskId, completed: nextCompleted }, { onConflict: 'task_date,pinned_task_id' })
+        : await supabase.from('tasks').update({ completed: nextCompleted, updated_at: new Date().toISOString() }).eq('id', taskId)
+      if (result.error) reportError(result.error)
     },
-    [update],
+    [reportError, update],
   )
 
   const deleteTask = useCallback(
-    (category: CategoryId, dateKey: string, taskId: string, isPinned: boolean) => {
+    async (category: CategoryId, dateKey: string, taskId: string, isPinned: boolean) => {
       update((prev) => {
         if (isPinned) {
-          return {
-            ...prev,
-            pinned: {
-              ...prev.pinned,
-              [category]: prev.pinned[category].filter((p) => p.id !== taskId),
-            },
-          }
+          return { ...prev, pinned: { ...prev.pinned, [category]: prev.pinned[category].filter((p) => p.id !== taskId) } }
         }
         const day = prev.tasksByDate[dateKey] ?? emptyCategoryMap()
         return {
           ...prev,
-          tasksByDate: {
-            ...prev.tasksByDate,
-            [dateKey]: { ...day, [category]: day[category].filter((t) => t.id !== taskId) },
-          },
+          tasksByDate: { ...prev.tasksByDate, [dateKey]: { ...day, [category]: day[category].filter((t) => t.id !== taskId) } },
         }
       })
+
+      if (!supabase) return
+      const result = isPinned
+        ? await supabase.from('pinned_tasks').delete().eq('id', taskId)
+        : await supabase.from('tasks').delete().eq('id', taskId)
+      if (result.error) reportError(result.error)
     },
-    [update],
+    [reportError, update],
   )
 
   const editTask = useCallback(
-    (
-      category: CategoryId,
-      dateKey: string,
-      taskId: string,
-      isPinned: boolean,
-      newTitle: string,
-      newTime: string | null,
-    ) => {
-      if (!newTitle.trim()) return
+    async (category: CategoryId, dateKey: string, taskId: string, isPinned: boolean, newTitle: string, newTime: string | null) => {
+      const title = newTitle.trim()
+      if (!title) return
       update((prev) => {
         if (isPinned) {
           return {
             ...prev,
-            pinned: {
-              ...prev.pinned,
-              [category]: prev.pinned[category].map((p) =>
-                p.id === taskId ? { ...p, title: newTitle, time: newTime } : p,
-              ),
-            },
-            suggestions: {
-              ...prev.suggestions,
-              [category]: learnSuggestion(prev, category, newTitle),
-            },
+            pinned: { ...prev.pinned, [category]: prev.pinned[category].map((p) => (p.id === taskId ? { ...p, title, time: newTime } : p)) },
+            suggestions: { ...prev.suggestions, [category]: learnSuggestion(prev, category, title) },
           }
         }
         const day = prev.tasksByDate[dateKey] ?? emptyCategoryMap()
@@ -241,79 +353,110 @@ export function useTracker() {
           ...prev,
           tasksByDate: {
             ...prev.tasksByDate,
-            [dateKey]: {
-              ...day,
-              [category]: day[category].map((t) =>
-                t.id === taskId ? { ...t, title: newTitle, time: newTime } : t,
-              ),
-            },
+            [dateKey]: { ...day, [category]: day[category].map((t) => (t.id === taskId ? { ...t, title, time: newTime } : t)) },
           },
-          suggestions: {
-            ...prev.suggestions,
-            [category]: learnSuggestion(prev, category, newTitle),
-          },
+          suggestions: { ...prev.suggestions, [category]: learnSuggestion(prev, category, title) },
         }
       })
+
+      if (!supabase) return
+      const result = isPinned
+        ? await supabase.from('pinned_tasks').update({ title, task_time: newTime, updated_at: new Date().toISOString() }).eq('id', taskId)
+        : await supabase.from('tasks').update({ title, task_time: newTime, updated_at: new Date().toISOString() }).eq('id', taskId)
+      if (result.error) reportError(result.error)
     },
-    [update],
+    [reportError, update],
   )
 
-  // Pin an unpinned task (moves it into pinned list) or unpin a pinned task
-  // (drops it back into the current day's unpinned list).
   const togglePin = useCallback(
-    (category: CategoryId, dateKey: string, taskId: string, isPinned: boolean) => {
-      update((prev) => {
-        if (isPinned) {
-          const p = prev.pinned[category].find((x) => x.id === taskId)
-          if (!p) return prev
+    async (category: CategoryId, dateKey: string, taskId: string, isPinned: boolean) => {
+      const prevState = state
+      if (isPinned) {
+        const pinnedTask = prevState.pinned[category].find((x) => x.id === taskId)
+        if (!pinnedTask) return
+        const restoredTempId = uid()
+        update((prev) => {
           const day = prev.tasksByDate[dateKey] ?? emptyCategoryMap()
-          const restored: Task = { id: uid(), title: p.title, time: p.time, completed: false }
+          const restored: Task = { id: restoredTempId, title: pinnedTask.title, time: pinnedTask.time, completed: false }
           return {
             ...prev,
-            pinned: {
-              ...prev.pinned,
-              [category]: prev.pinned[category].filter((x) => x.id !== taskId),
-            },
+            pinned: { ...prev.pinned, [category]: prev.pinned[category].filter((x) => x.id !== taskId) },
+            tasksByDate: { ...prev.tasksByDate, [dateKey]: { ...day, [category]: [...day[category], restored] } },
+          }
+        })
+        if (!supabase) return
+        const { data, error } = await supabase
+          .from('tasks')
+          .insert({ title: pinnedTask.title, task_date: dateKey, task_time: pinnedTask.time, category, completed: false, sort_order: Date.now() })
+          .select('id')
+          .single()
+        if (error || !data) {
+          reportError(error)
+          return
+        }
+        const deleteResult = await supabase.from('pinned_tasks').delete().eq('id', taskId)
+        if (deleteResult.error) reportError(deleteResult.error)
+        update((prev) => {
+          const day = prev.tasksByDate[dateKey] ?? emptyCategoryMap()
+          return {
+            ...prev,
             tasksByDate: {
               ...prev.tasksByDate,
-              [dateKey]: { ...day, [category]: [...day[category], restored] },
+              [dateKey]: { ...day, [category]: day[category].map((t) => (t.id === restoredTempId ? { ...t, id: data.id } : t)) },
             },
           }
-        }
-        // pin: remove from unpinned, add to pinned
-        const day = prev.tasksByDate[dateKey] ?? emptyCategoryMap()
-        const t = day[category].find((x) => x.id === taskId)
-        if (!t) return prev
-        const newPinned: PinnedTask = { id: uid(), title: t.title, time: t.time }
+        })
+        return
+      }
+
+      const day = prevState.tasksByDate[dateKey] ?? emptyCategoryMap()
+      const task = day[category].find((x) => x.id === taskId)
+      if (!task) return
+      const pinnedTempId = uid()
+      update((prev) => {
+        const currentDay = prev.tasksByDate[dateKey] ?? emptyCategoryMap()
+        const newPinned: PinnedTask = { id: pinnedTempId, title: task.title, time: task.time }
         const dayCompletion = prev.pinnedCompletion[dateKey] ?? {}
         return {
           ...prev,
           pinned: { ...prev.pinned, [category]: [...prev.pinned[category], newPinned] },
-          tasksByDate: {
-            ...prev.tasksByDate,
-            [dateKey]: { ...day, [category]: day[category].filter((x) => x.id !== taskId) },
-          },
-          // carry over current completion state for that day
-          pinnedCompletion: {
-            ...prev.pinnedCompletion,
-            [dateKey]: { ...dayCompletion, [newPinned.id]: t.completed },
-          },
+          tasksByDate: { ...prev.tasksByDate, [dateKey]: { ...currentDay, [category]: currentDay[category].filter((x) => x.id !== taskId) } },
+          pinnedCompletion: { ...prev.pinnedCompletion, [dateKey]: { ...dayCompletion, [pinnedTempId]: task.completed } },
+        }
+      })
+      if (!supabase) return
+      const { data, error } = await supabase
+        .from('pinned_tasks')
+        .insert({ title: task.title, task_time: task.time, category, sort_order: Date.now() })
+        .select('id')
+        .single()
+      if (error || !data) {
+        reportError(error)
+        return
+      }
+      const [deleteResult, completionResult] = await Promise.all([
+        supabase.from('tasks').delete().eq('id', taskId),
+        supabase.from('pinned_completion').upsert({ task_date: dateKey, pinned_task_id: data.id, completed: task.completed }, { onConflict: 'task_date,pinned_task_id' }),
+      ])
+      if (deleteResult.error) reportError(deleteResult.error)
+      if (completionResult.error) reportError(completionResult.error)
+      update((prev) => {
+        const dayCompletion = prev.pinnedCompletion[dateKey] ?? {}
+        const { [pinnedTempId]: tempCompletion, ...restCompletion } = dayCompletion
+        return {
+          ...prev,
+          pinned: { ...prev.pinned, [category]: prev.pinned[category].map((p) => (p.id === pinnedTempId ? { ...p, id: data.id } : p)) },
+          pinnedCompletion: { ...prev.pinnedCompletion, [dateKey]: { ...restCompletion, [data.id]: tempCompletion ?? task.completed } },
         }
       })
     },
-    [update],
+    [reportError, state, update],
   )
 
-  // Reorder within a single category + group (pinned or unpinned) for a date
   const reorderTasks = useCallback(
-    (
-      category: CategoryId,
-      group: 'pinned' | 'unpinned',
-      dateKey: string,
-      fromId: string,
-      toId: string,
-    ) => {
+    async (category: CategoryId, group: 'pinned' | 'unpinned', dateKey: string, fromId: string, toId: string) => {
       if (fromId === toId) return
+      let orderedIds: string[] = []
       update((prev) => {
         if (group === 'pinned') {
           const arr = [...prev.pinned[category]]
@@ -322,6 +465,7 @@ export function useTracker() {
           if (from === -1 || to === -1) return prev
           const [moved] = arr.splice(from, 1)
           arr.splice(to, 0, moved)
+          orderedIds = arr.map((x) => x.id)
           return { ...prev, pinned: { ...prev.pinned, [category]: arr } }
         }
         const day = prev.tasksByDate[dateKey] ?? emptyCategoryMap()
@@ -331,46 +475,54 @@ export function useTracker() {
         if (from === -1 || to === -1) return prev
         const [moved] = arr.splice(from, 1)
         arr.splice(to, 0, moved)
-        return {
-          ...prev,
-          tasksByDate: { ...prev.tasksByDate, [dateKey]: { ...day, [category]: arr } },
-        }
+        orderedIds = arr.map((x) => x.id)
+        return { ...prev, tasksByDate: { ...prev.tasksByDate, [dateKey]: { ...day, [category]: arr } } }
       })
+
+      if (!supabase || orderedIds.length === 0) return
+      const client = supabase
+      const table = group === 'pinned' ? 'pinned_tasks' : 'tasks'
+      const results = await Promise.all(orderedIds.map((id, index) => client.from(table).update({ sort_order: index }).eq('id', id)))
+      const failed = results.find((result) => result.error)
+      if (failed?.error) reportError(failed.error)
     },
-    [update],
+    [reportError, update],
   )
 
   const clearDay = useCallback(
-    (dateKey: string) => {
+    async (dateKey: string) => {
       update((prev) => {
         const next = { ...prev.tasksByDate }
         delete next[dateKey]
+        const nextPinnedCompletion = { ...prev.pinnedCompletion }
+        delete nextPinnedCompletion[dateKey]
         return {
           ...prev,
           tasksByDate: next,
+          pinnedCompletion: nextPinnedCompletion,
           completedAlerts: prev.completedAlerts.filter((a) => !a.startsWith(`${dateKey}:`)),
         }
       })
+      if (!supabase) return
+      const [tasksResult, pinnedResult] = await Promise.all([
+        supabase.from('tasks').delete().eq('task_date', dateKey),
+        supabase.from('pinned_completion').delete().eq('task_date', dateKey),
+      ])
+      if (tasksResult.error) reportError(tasksResult.error)
+      if (pinnedResult.error) reportError(pinnedResult.error)
     },
-    [update],
+    [reportError, update],
   )
 
-  /* ------------------------------ navigation ------------------------------ */
+  const setView = useCallback((view: ViewMode) => update((p) => {
+    if (view === 'day') {
+      const offset = dayOffsetFromToday(p.selectedDate)
+      return { ...p, view, selectedDate: offset >= -1 && offset <= 1 ? p.selectedDate : todayKey() }
+    }
+    return { ...p, view }
+  }), [update])
 
-  const setView = useCallback(
-    (view: ViewMode) => update((p) => {
-      if (view === 'day') {
-        const offset = dayOffsetFromToday(p.selectedDate)
-        return { ...p, view, selectedDate: offset >= -1 && offset <= 1 ? p.selectedDate : todayKey() }
-      }
-      return { ...p, view }
-    }),
-    [update],
-  )
-  const setSelectedDate = useCallback(
-    (selectedDate: string) => update((p) => ({ ...p, selectedDate })),
-    [update],
-  )
+  const setSelectedDate = useCallback((selectedDate: string) => update((p) => ({ ...p, selectedDate })), [update])
 
   const goPrev = useCallback(() => {
     update((p) => {
@@ -390,10 +542,6 @@ export function useTracker() {
 
   const goToday = useCallback(() => update((p) => ({ ...p, selectedDate: todayKey() })), [update])
 
-  /* ------------------------------ progress ------------------------------ */
-
-  // Day view: count pinned + unpinned for the date.
-  // Week view: count only unpinned tasks that have time across the period.
   const categoryProgress = useCallback(
     (category: CategoryId): { done: number; total: number } => {
       if (state.view === 'day') {
@@ -425,9 +573,6 @@ export function useTracker() {
     return { done, total, percent }
   }, [categoryProgress])
 
-  /* ------------------------------ completion modals ------------------------------ */
-
-  // Signature of completion state for the selected day (day view only)
   const completionSignature = useMemo(() => {
     if (state.view !== 'day') return ''
     return CATEGORIES.map((c) => {
@@ -443,10 +588,7 @@ export function useTracker() {
   useEffect(() => {
     if (state.view !== 'day' || !hydrated) return
     const dateKey = state.selectedDate
-    const perCat = CATEGORIES.map((c) => ({
-      id: c.id,
-      tasks: getDayTasks(c.id, dateKey),
-    }))
+    const perCat = CATEGORIES.map((c) => ({ id: c.id, tasks: getDayTasks(c.id, dateKey) }))
     const withTasks = perCat.filter((x) => x.tasks.length > 0)
     if (withTasks.length === 0) return
     const completeCats = withTasks.filter((x) => x.tasks.every((t) => t.completed))
@@ -457,23 +599,16 @@ export function useTracker() {
       if (!alertsRef.current.includes(token)) {
         setModal({ type: 'all' })
         const newTokens = [token, ...withTasks.map((x) => `${dateKey}:${x.id}`)]
-        update((p) => ({
-          ...p,
-          completedAlerts: Array.from(new Set([...p.completedAlerts, ...newTokens])),
-        }))
+        update((p) => ({ ...p, completedAlerts: Array.from(new Set([...p.completedAlerts, ...newTokens])) }))
       }
       return
     }
 
-    // a single category completed while others remain
     for (const c of completeCats) {
       const token = `${dateKey}:${c.id}`
       if (!alertsRef.current.includes(token)) {
         setModal({ type: 'category', category: c.id })
-        update((p) => ({
-          ...p,
-          completedAlerts: Array.from(new Set([...p.completedAlerts, token])),
-        }))
+        update((p) => ({ ...p, completedAlerts: Array.from(new Set([...p.completedAlerts, token])) }))
         break
       }
     }
@@ -483,14 +618,14 @@ export function useTracker() {
   return {
     state,
     hydrated,
+    loading,
+    syncError,
     modal,
     dismissModal: () => setModal(null),
-    // getters
     getUnpinned,
     getDayTasks,
     categoryProgress,
     overallProgress,
-    // mutations
     addTaskForDate,
     toggleTask,
     deleteTask,
@@ -498,7 +633,6 @@ export function useTracker() {
     togglePin,
     reorderTasks,
     clearDay,
-    // navigation
     setView,
     setSelectedDate,
     goPrev,

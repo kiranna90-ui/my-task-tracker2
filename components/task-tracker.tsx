@@ -13,7 +13,7 @@ import { CATEGORIES, type ViewMode } from '@/lib/tracker/types'
 export function TaskTracker() {
   const tracker = useTracker()
   const [focusedDate, setFocusedDate] = useState<string | null>(null)
-  const { state, hydrated, modal, dismissModal } = tracker
+  const { state, hydrated, loading, syncError, modal, dismissModal } = tracker
 
   const handleSetView = (view: ViewMode) => {
     tracker.setView(view)
@@ -49,8 +49,20 @@ export function TaskTracker() {
           onToday={handleToday}
         />
 
+        {loading && (
+          <div className="rounded-[2rem] bg-white/60 px-5 py-4 text-center text-sm font-extrabold text-muted-ink shadow-sm">
+            Загружаю задачи ✨
+          </div>
+        )}
+
+        {syncError && (
+          <div className="rounded-[2rem] bg-white/70 px-5 py-4 text-center text-sm font-extrabold text-pink shadow-sm">
+            {syncError}
+          </div>
+        )}
+
         {/* Avoid hydration mismatch: only render date-dependent content client-side */}
-        {hydrated && (
+        {hydrated && !loading && (
           <>
             {state.view === 'week' && (
               <WeekCalendar tracker={tracker} focusedDate={focusedDate} onSelect={handleSelectDay} />
