@@ -13,7 +13,7 @@ export function Hero() {
       </div>
 
       {/* Character sits above the main card and is pulled close to the card edge */}
-      <div className="relative z-40 mt-5 -mb-20 flex justify-center">
+      <div className="relative z-10 mt-5 -mb-20 flex justify-center">
         <Image
           src="/images/supergirl.png"
           alt="Милый персонаж с телефоном — талисман трекера задач"
