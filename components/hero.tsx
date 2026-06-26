@@ -13,7 +13,7 @@ export function Hero() {
       </div>
 
       {/* Character sits close to the main card without overlapping text */}
-      <div className="relative z-40 mt-5 -mb-36 flex justify-center">
+      <div className="relative z-40 mt-5 -mb-25 flex justify-center">
         <Image
           src="/images/supergirl.png"
           alt="Милый персонаж с телефоном — талисман трекера задач"
