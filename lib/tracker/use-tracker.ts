@@ -15,6 +15,87 @@ import { addDays, dayOffsetFromToday, todayKey, weekDays } from './date-utils'
 import { parseTaskInput, uid } from './parse'
 
 const STORAGE_KEY = 'my-task-tracker:v1'
+const COMPLETION_CACHE_KEY = 'my-task-tracker:completion-cache:v1'
+
+type CompletionCache = {
+  tasks: Record<string, boolean>
+  pinned: Record<string, Record<string, boolean>>
+}
+
+const emptyCompletionCache = (): CompletionCache => ({ tasks: {}, pinned: {} })
+
+function createDbId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
+  return uid()
+}
+
+function readCompletionCache(): CompletionCache {
+  if (typeof window === 'undefined') return emptyCompletionCache()
+  try {
+    const raw = window.localStorage.getItem(COMPLETION_CACHE_KEY)
+    if (!raw) return emptyCompletionCache()
+    const parsed = JSON.parse(raw) as Partial<CompletionCache>
+    return { tasks: parsed.tasks ?? {}, pinned: parsed.pinned ?? {} }
+  } catch {
+    return emptyCompletionCache()
+  }
+}
+
+function writeCompletionCache(cache: CompletionCache) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(COMPLETION_CACHE_KEY, JSON.stringify(cache))
+  } catch {
+    /* ignore quota errors */
+  }
+}
+
+function rememberTaskCompletion(taskId: string, completed: boolean) {
+  const cache = readCompletionCache()
+  cache.tasks[taskId] = completed
+  writeCompletionCache(cache)
+}
+
+function forgetTaskCompletion(taskId: string) {
+  const cache = readCompletionCache()
+  delete cache.tasks[taskId]
+  writeCompletionCache(cache)
+}
+
+function rememberPinnedCompletion(dateKey: string, taskId: string, completed: boolean) {
+  const cache = readCompletionCache()
+  cache.pinned[dateKey] = { ...(cache.pinned[dateKey] ?? {}), [taskId]: completed }
+  writeCompletionCache(cache)
+}
+
+function forgetPinnedCompletion(dateKey: string, taskId: string) {
+  const cache = readCompletionCache()
+  if (!cache.pinned[dateKey]) return
+  delete cache.pinned[dateKey][taskId]
+  if (Object.keys(cache.pinned[dateKey]).length === 0) delete cache.pinned[dateKey]
+  writeCompletionCache(cache)
+}
+
+function applyCompletionCache(state: TrackerState, cache: CompletionCache): TrackerState {
+  const tasksByDate: TrackerState['tasksByDate'] = {}
+  for (const [dateKey, day] of Object.entries(state.tasksByDate)) {
+    tasksByDate[dateKey] = emptyCategoryMap()
+    for (const category of CATEGORIES) {
+      tasksByDate[dateKey][category.id] = day[category.id].map((task) =>
+        Object.prototype.hasOwnProperty.call(cache.tasks, task.id)
+          ? { ...task, completed: cache.tasks[task.id] }
+          : task,
+      )
+    }
+  }
+
+  const pinnedCompletion: TrackerState['pinnedCompletion'] = { ...state.pinnedCompletion }
+  for (const [dateKey, values] of Object.entries(cache.pinned)) {
+    pinnedCompletion[dateKey] = { ...(pinnedCompletion[dateKey] ?? {}), ...values }
+  }
+
+  return { ...state, tasksByDate, pinnedCompletion }
+}
 
 type DbTask = {
   id: string
@@ -143,6 +224,11 @@ export function useTracker() {
   const [loading, setLoading] = useState(true)
   const [syncError, setSyncError] = useState<string | null>(null)
   const [modal, setModal] = useState<ModalInfo | null>(null)
+  const stateRef = useRef(state)
+
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
 
   useEffect(() => {
     let cancelled = false
@@ -153,7 +239,7 @@ export function useTracker() {
 
       if (isSupabaseConfigured) {
         try {
-          const remoteState = await loadFromSupabase()
+          const remoteState = applyCompletionCache(await loadFromSupabase(), readCompletionCache())
           if (!cancelled) {
             setState((prev) => ({ ...remoteState, view: prev.view, selectedDate: prev.selectedDate, completedAlerts: prev.completedAlerts }))
           }
@@ -242,9 +328,9 @@ export function useTracker() {
     async (category: CategoryId, dateKey: string, raw: string) => {
       const { time, title } = parseTaskInput(raw)
       if (!title) return
-      const tempId = uid()
+      const taskId = createDbId()
       const sortOrder = Date.now()
-      const newTask: Task = { id: tempId, title, time, completed: false }
+      const newTask: Task = { id: taskId, title, time, completed: false }
 
       update((prev) => {
         const day = prev.tasksByDate[dateKey] ?? emptyCategoryMap()
@@ -256,30 +342,33 @@ export function useTracker() {
       })
 
       if (!supabase) return
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from('tasks')
-        .insert({ title, task_date: dateKey, task_time: time, category, completed: false, sort_order: sortOrder })
-        .select('id')
-        .single()
+        .insert({ id: taskId, title, task_date: dateKey, task_time: time, category, completed: false, sort_order: sortOrder })
 
-      if (error || !data) {
+      if (error) {
         reportError(error)
         return
       }
 
-      update((prev) => {
-        const day = prev.tasksByDate[dateKey] ?? emptyCategoryMap()
-        return {
-          ...prev,
-          tasksByDate: {
-            ...prev.tasksByDate,
-            [dateKey]: {
-              ...day,
-              [category]: day[category].map((t) => (t.id === tempId ? { ...t, id: data.id } : t)),
-            },
-          },
+      // If the user marked the new task as completed before the insert finished,
+      // persist that latest local state to Supabase as soon as the row exists.
+      const currentDay = stateRef.current.tasksByDate[dateKey] ?? emptyCategoryMap()
+      const currentTask = currentDay[category].find((task) => task.id === taskId)
+      if (currentTask?.completed) {
+        const syncResult = await supabase
+          .from('tasks')
+          .update({ completed: true, updated_at: new Date().toISOString() })
+          .eq('id', taskId)
+          .select('id')
+          .maybeSingle()
+        if (syncResult.error || !syncResult.data) {
+          rememberTaskCompletion(taskId, true)
+          if (syncResult.error) reportError(syncResult.error)
+        } else {
+          forgetTaskCompletion(taskId)
         }
-      })
+      }
     },
     [reportError, update],
   )
@@ -308,11 +397,28 @@ export function useTracker() {
         }
       })
 
+      if (isPinned) rememberPinnedCompletion(dateKey, taskId, nextCompleted)
+      else rememberTaskCompletion(taskId, nextCompleted)
+
       if (!supabase) return
-      const result = isPinned
-        ? await supabase.from('pinned_completion').upsert({ task_date: dateKey, pinned_task_id: taskId, completed: nextCompleted }, { onConflict: 'task_date,pinned_task_id' })
-        : await supabase.from('tasks').update({ completed: nextCompleted, updated_at: new Date().toISOString() }).eq('id', taskId)
+      if (isPinned) {
+        const result = await supabase
+          .from('pinned_completion')
+          .upsert({ task_date: dateKey, pinned_task_id: taskId, completed: nextCompleted }, { onConflict: 'task_date,pinned_task_id' })
+        if (result.error) reportError(result.error)
+        else forgetPinnedCompletion(dateKey, taskId)
+        return
+      }
+
+      const result = await supabase
+        .from('tasks')
+        .update({ completed: nextCompleted, updated_at: new Date().toISOString() })
+        .eq('id', taskId)
+        .select('id')
+        .maybeSingle()
       if (result.error) reportError(result.error)
+      else if (result.data) forgetTaskCompletion(taskId)
+
     },
     [reportError, update],
   )

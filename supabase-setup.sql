@@ -8,13 +8,13 @@ create table if not exists public.tasks (
   task_time text,
   category text not null,
   completed boolean not null default false,
-  sort_order integer not null default 0,
+  sort_order bigint not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 alter table public.tasks add column if not exists completed boolean not null default false;
-alter table public.tasks add column if not exists sort_order integer not null default 0;
+alter table public.tasks add column if not exists sort_order bigint not null default 0;
 alter table public.tasks add column if not exists updated_at timestamptz not null default now();
 
 create table if not exists public.pinned_tasks (
@@ -22,10 +22,13 @@ create table if not exists public.pinned_tasks (
   title text not null,
   task_time text,
   category text not null,
-  sort_order integer not null default 0,
+  sort_order bigint not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.pinned_tasks add column if not exists sort_order bigint not null default 0;
+alter table public.pinned_tasks alter column sort_order type bigint using sort_order::bigint;
 
 create table if not exists public.pinned_completion (
   id uuid primary key default gen_random_uuid(),
