@@ -55,3 +55,15 @@ npm run build
 5. Не загружай `node_modules` и `.next`.
 6. Нажми Commit changes.
 7. В Vercel дождись нового деплоя или нажми Redeploy.
+
+## Vercel / npm only
+
+Этот архив очищен для деплоя через npm:
+
+- `pnpm-lock.yaml` удалён;
+- `vercel.json` удалён, чтобы Vercel использовал стандартные настройки Next.js;
+- оставлен `package-lock.json`;
+- в `package.json` указан `packageManager: npm@11.5.1`;
+- Supabase подключён через переменные окружения `NEXT_PUBLIC_SUPABASE_URL` и `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
+
+После загрузки на GitHub в Vercel проверь, что Install Command не переопределён вручную. Лучше выключить Override.
