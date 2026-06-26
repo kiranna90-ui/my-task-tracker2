@@ -14,7 +14,7 @@ export function Hero() {
       </div>
 
       {/* Character illustration, sitting low so she leans over the card below */}
-      <div className="relative z-10 -mb-10 mt-2 flex justify-center">
+      <div className="relative z-10 -mb-20 mt-2 flex justify-center">
         <Image
           src="/images/supergirl.png"
           alt="Милый персонаж с телефоном — талисман трекера задач"

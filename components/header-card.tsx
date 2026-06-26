@@ -11,6 +11,8 @@ import {
   fromKey,
   relativeDayLabel,
   dayOffsetFromToday,
+  weekDays,
+  todayKey,
 } from '@/lib/tracker/date-utils'
 
 const TABS: { id: ViewMode; label: string }[] = [
@@ -39,15 +41,21 @@ export function HeaderCard({
 
   const periodLabel = view === 'day' ? formatLongDate(selectedDate) : formatWeekRange(selectedDate)
 
-  const todayLabel = view === 'day' ? relativeDayLabel(selectedDate) : 'Сегодня'
+  const weekOffset = Math.round(
+    (fromKey(weekDays(selectedDate)[0]).getTime() - fromKey(weekDays(todayKey())[0]).getTime()) /
+      (7 * 86400000),
+  )
+  const weekLabel = weekOffset < 0 ? 'Предыдущая' : weekOffset > 0 ? 'Следующая' : 'Текущая'
+  const todayLabel = view === 'day' ? relativeDayLabel(selectedDate) : weekLabel
   const dayOffset = dayOffsetFromToday(selectedDate)
   const disablePrev = view === 'day' && dayOffset <= -1
   const disableNext = view === 'day' && dayOffset >= 1
 
   return (
     <section className="glass-card relative z-30 rounded-[2.25rem] px-6 pb-7 pt-12">
-      <h1 className="text-center text-4xl font-black tracking-tight text-ink">
-        Мои задачи <span className="align-middle">💜</span>
+      <h1 className="flex items-center justify-center gap-3 text-center text-4xl font-black tracking-tight text-ink">
+        <span>Мои задачи</span>
+        <span className="inline-flex items-center leading-none" aria-hidden="true">💜</span>
       </h1>
       <p className="mt-1 text-center text-base font-bold text-muted-ink">{periodLabel}</p>
       <p className="mx-auto mt-2 max-w-[18rem] text-balance text-center text-sm font-bold text-purple">
@@ -91,12 +99,9 @@ export function HeaderCard({
           onClick={onPrev}
           disabled={disablePrev}
           aria-label={view === 'week' ? 'Предыдущая неделя' : 'Вчера'}
-          className={
-            'flex h-11 items-center justify-center rounded-full bg-white/70 text-purple shadow-sm transition hover:bg-white active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100 ' +
-            (view === 'week' ? 'min-w-[5.8rem] px-4 text-xs font-extrabold' : 'w-11')
-          }
+          className="flex h-11 w-11 items-center justify-center rounded-full bg-white/70 text-purple shadow-sm transition hover:bg-white active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100"
         >
-          {view === 'week' ? 'Предыдущая' : <ChevronLeft className="h-5 w-5" />}
+          <ChevronLeft className="h-5 w-5" />
         </button>
         <button
           type="button"
@@ -110,12 +115,9 @@ export function HeaderCard({
           onClick={onNext}
           disabled={disableNext}
           aria-label={view === 'week' ? 'Следующая неделя' : 'Завтра'}
-          className={
-            'flex h-11 items-center justify-center rounded-full bg-white/70 text-purple shadow-sm transition hover:bg-white active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100 ' +
-            (view === 'week' ? 'min-w-[5.8rem] px-4 text-xs font-extrabold' : 'w-11')
-          }
+          className="flex h-11 w-11 items-center justify-center rounded-full bg-white/70 text-purple shadow-sm transition hover:bg-white active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100"
         >
-          {view === 'week' ? 'Следующая' : <ChevronRight className="h-5 w-5" />}
+          <ChevronRight className="h-5 w-5" />
         </button>
       </div>
     </section>

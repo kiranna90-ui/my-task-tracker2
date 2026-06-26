@@ -53,7 +53,7 @@ function DayCell({
         )}
       </span>
 
-      <span className="mt-1 flex min-h-[3.5rem] w-full flex-col items-center justify-start gap-0.5">
+      <span className="mt-3 flex min-h-[3.25rem] w-full flex-col items-center justify-start gap-0.5">
         {counts.map(({ category, count }) => (
           <span
             key={category.id}
