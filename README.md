@@ -5,7 +5,7 @@
 ## Что есть в этой версии
 
 - Данные хранятся в Supabase, поэтому телефон и компьютер видят одни и те же задачи.
-- Добавлена live-синхронизация через Supabase Realtime: изменения с одного устройства появляются на другом без ручного обновления страницы.
+- Live-синхронизация через Supabase Realtime отключена, чтобы галочки и прогресс не сбрасывались. Данные синхронизируются после обновления страницы.
 - В дизайне обновлён верхний блок: слева от персонажа оставлен один аккуратный декоративный элемент, персонаж опущен ближе к плашке задач.
 - Проект использует только `npm`, без `pnpm` и без `vercel.json` с install-командами.
 
@@ -20,19 +20,9 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
 
 Важно: в `NEXT_PUBLIC_SUPABASE_URL` вставляй адрес без `/rest/v1/`.
 
-## Supabase Realtime
+## Как работает синхронизация
 
-Для live-синхронизации таблицы должны быть добавлены в publication `supabase_realtime`.
-
-В Supabase открой SQL Editor и выполни:
-
-```sql
-alter publication supabase_realtime add table public.tasks;
-alter publication supabase_realtime add table public.pinned_tasks;
-alter publication supabase_realtime add table public.pinned_completion;
-```
-
-Если Supabase скажет, что таблица уже добавлена, это нормально.
+Задачи сохраняются в Supabase. Чтобы увидеть изменения, сделанные на другом устройстве, обнови страницу приложения.
 
 ## Команды
 

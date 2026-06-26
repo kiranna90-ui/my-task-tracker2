@@ -31,15 +31,5 @@ export function parseTaskInput(raw: string): { time: string | null; title: strin
 }
 
 export function uid(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID()
-  }
-
-  // UUID v4 fallback for older browsers. Supabase id columns are uuid,
-  // so optimistic client-side ids must also be valid UUIDs.
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
-    const value = Math.floor(Math.random() * 16)
-    const variant = char === 'x' ? value : (value & 0x3) | 0x8
-    return variant.toString(16)
-  })
+  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4)
 }
