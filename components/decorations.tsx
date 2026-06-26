@@ -15,6 +15,14 @@ export function HeroDecorations() {
         className="absolute right-14 top-40 h-4 w-4 fill-white/80 text-white/80 animate-float"
         style={{ animationDelay: '1.2s' }}
       />
+      <Sparkle
+        className="absolute left-12 top-56 h-4 w-4 fill-white/75 text-white/75 animate-float"
+        style={{ animationDelay: '1.9s' }}
+      />
+      <Sparkle
+        className="absolute right-6 top-72 h-3.5 w-3.5 fill-white/70 text-white/70 animate-float"
+        style={{ animationDelay: '2.4s' }}
+      />
       {/* One clean accent on the left side instead of two separate round elements */}
       <Heart
         className="absolute left-10 top-36 h-6 w-6 fill-white/85 text-white/85 animate-float"
@@ -23,6 +31,14 @@ export function HeroDecorations() {
       <Heart
         className="absolute right-10 top-52 h-5 w-5 fill-pink text-pink animate-float"
         style={{ animationDelay: '1.6s' }}
+      />
+      <Heart
+        className="absolute left-16 top-80 h-4 w-4 fill-pink/70 text-pink/70 animate-float"
+        style={{ animationDelay: '2.1s' }}
+      />
+      <Heart
+        className="absolute right-20 top-28 h-3.5 w-3.5 fill-white/80 text-white/80 animate-float"
+        style={{ animationDelay: '2.8s' }}
       />
     </div>
   )
