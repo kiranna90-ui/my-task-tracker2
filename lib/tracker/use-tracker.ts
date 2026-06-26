@@ -40,25 +40,6 @@ type DbPinnedCompletion = {
   completed: boolean | null
 }
 
-
-function getErrorMessage(error: unknown): string {
-  if (!error) return 'неизвестная ошибка'
-  if (typeof error === 'string') return error
-  if (error instanceof Error) return error.message
-  if (typeof error === 'object') {
-    const e = error as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown }
-    const parts = [e.message, e.details, e.hint, e.code]
-      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-    if (parts.length > 0) return parts.join(' | ')
-    try {
-      return JSON.stringify(error)
-    } catch {
-      return 'неизвестная ошибка'
-    }
-  }
-  return 'неизвестная ошибка'
-}
-
 const emptyCategoryMap = () => ({ personal: [], work: [], family: [] } as Record<CategoryId, Task[]>)
 const emptyPinnedMap = () => ({ personal: [], work: [], family: [] } as Record<CategoryId, PinnedTask[]>)
 
@@ -163,6 +144,19 @@ export function useTracker() {
   const [syncError, setSyncError] = useState<string | null>(null)
   const [modal, setModal] = useState<ModalInfo | null>(null)
 
+  const refreshFromSupabase = useCallback(async () => {
+    if (!isSupabaseConfigured) return
+    setSyncError(null)
+    try {
+      const remoteState = await loadFromSupabase()
+      setState((prev) => ({ ...remoteState, view: prev.view, selectedDate: prev.selectedDate, completedAlerts: prev.completedAlerts }))
+    } catch (error) {
+      console.error(error)
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      setSyncError(`Не получилось загрузить задачи из Supabase: ${message}`)
+    }
+  }, [])
+
   useEffect(() => {
     let cancelled = false
 
@@ -173,10 +167,13 @@ export function useTracker() {
       if (isSupabaseConfigured) {
         try {
           const remoteState = await loadFromSupabase()
-          if (!cancelled) setState((prev) => ({ ...remoteState, view: prev.view, selectedDate: prev.selectedDate }))
+          if (!cancelled) {
+            setState((prev) => ({ ...remoteState, view: prev.view, selectedDate: prev.selectedDate, completedAlerts: prev.completedAlerts }))
+          }
         } catch (error) {
           console.error(error)
-          if (!cancelled) setSyncError(`Не получилось загрузить задачи из Supabase: ${getErrorMessage(error)}`)
+          const message = error instanceof Error ? error.message : 'Unknown error'
+          if (!cancelled) setSyncError(`Не получилось загрузить задачи из Supabase: ${message}`)
         }
       } else {
         try {
@@ -200,6 +197,39 @@ export function useTracker() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!supabase || !isSupabaseConfigured) return
+
+    const channel = supabase
+      .channel('tracker-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'tasks' },
+        () => {
+          void refreshFromSupabase()
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pinned_tasks' },
+        () => {
+          void refreshFromSupabase()
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pinned_completion' },
+        () => {
+          void refreshFromSupabase()
+        },
+      )
+      .subscribe()
+
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [refreshFromSupabase])
+
   // Local fallback only when Supabase variables are not configured.
   useEffect(() => {
     if (!hydrated || isSupabaseConfigured) return
@@ -216,7 +246,7 @@ export function useTracker() {
 
   const reportError = useCallback((error: unknown) => {
     console.error(error)
-    setSyncError(`Не получилось сохранить изменения: ${getErrorMessage(error)}`)
+    setSyncError('Не получилось сохранить изменения. Обнови страницу и попробуй ещё раз.')
   }, [])
 
   const getUnpinned = useCallback(
