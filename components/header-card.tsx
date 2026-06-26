@@ -52,7 +52,7 @@ export function HeaderCard({
   const disableNext = view === 'day' && dayOffset >= 1
 
   return (
-    <section className="glass-card relative z-30 rounded-[2.25rem] px-6 pb-7 pt-12">
+    <section className="glass-card relative z-30 rounded-[2.25rem] px-6 pb-7 pt-6">
       <h1 className="flex items-center justify-center gap-3 text-center text-4xl font-black tracking-tight text-ink">
         <span>Мои задачи</span>
         <span className="inline-flex items-center leading-none" aria-hidden="true">💜</span>
