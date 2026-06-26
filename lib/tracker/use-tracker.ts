@@ -15,87 +15,6 @@ import { addDays, dayOffsetFromToday, todayKey, weekDays } from './date-utils'
 import { parseTaskInput, uid } from './parse'
 
 const STORAGE_KEY = 'my-task-tracker:v1'
-const COMPLETION_CACHE_KEY = 'my-task-tracker:completion-cache:v1'
-
-type CompletionCache = {
-  tasks: Record<string, boolean>
-  pinned: Record<string, Record<string, boolean>>
-}
-
-const emptyCompletionCache = (): CompletionCache => ({ tasks: {}, pinned: {} })
-
-function createDbId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
-  return uid()
-}
-
-function readCompletionCache(): CompletionCache {
-  if (typeof window === 'undefined') return emptyCompletionCache()
-  try {
-    const raw = window.localStorage.getItem(COMPLETION_CACHE_KEY)
-    if (!raw) return emptyCompletionCache()
-    const parsed = JSON.parse(raw) as Partial<CompletionCache>
-    return { tasks: parsed.tasks ?? {}, pinned: parsed.pinned ?? {} }
-  } catch {
-    return emptyCompletionCache()
-  }
-}
-
-function writeCompletionCache(cache: CompletionCache) {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(COMPLETION_CACHE_KEY, JSON.stringify(cache))
-  } catch {
-    /* ignore quota errors */
-  }
-}
-
-function rememberTaskCompletion(taskId: string, completed: boolean) {
-  const cache = readCompletionCache()
-  cache.tasks[taskId] = completed
-  writeCompletionCache(cache)
-}
-
-function forgetTaskCompletion(taskId: string) {
-  const cache = readCompletionCache()
-  delete cache.tasks[taskId]
-  writeCompletionCache(cache)
-}
-
-function rememberPinnedCompletion(dateKey: string, taskId: string, completed: boolean) {
-  const cache = readCompletionCache()
-  cache.pinned[dateKey] = { ...(cache.pinned[dateKey] ?? {}), [taskId]: completed }
-  writeCompletionCache(cache)
-}
-
-function forgetPinnedCompletion(dateKey: string, taskId: string) {
-  const cache = readCompletionCache()
-  if (!cache.pinned[dateKey]) return
-  delete cache.pinned[dateKey][taskId]
-  if (Object.keys(cache.pinned[dateKey]).length === 0) delete cache.pinned[dateKey]
-  writeCompletionCache(cache)
-}
-
-function applyCompletionCache(state: TrackerState, cache: CompletionCache): TrackerState {
-  const tasksByDate: TrackerState['tasksByDate'] = {}
-  for (const [dateKey, day] of Object.entries(state.tasksByDate)) {
-    tasksByDate[dateKey] = emptyCategoryMap()
-    for (const category of CATEGORIES) {
-      tasksByDate[dateKey][category.id] = day[category.id].map((task) =>
-        Object.prototype.hasOwnProperty.call(cache.tasks, task.id)
-          ? { ...task, completed: cache.tasks[task.id] }
-          : task,
-      )
-    }
-  }
-
-  const pinnedCompletion: TrackerState['pinnedCompletion'] = { ...state.pinnedCompletion }
-  for (const [dateKey, values] of Object.entries(cache.pinned)) {
-    pinnedCompletion[dateKey] = { ...(pinnedCompletion[dateKey] ?? {}), ...values }
-  }
-
-  return { ...state, tasksByDate, pinnedCompletion }
-}
 
 type DbTask = {
   id: string
@@ -152,27 +71,6 @@ function reviveState(raw: unknown): TrackerState {
     view: r.view === 'week' || r.view === 'day' ? r.view : base.view,
     selectedDate: r.selectedDate ?? base.selectedDate,
     completedAlerts: r.completedAlerts ?? base.completedAlerts,
-  }
-}
-
-
-function readStoredState(): TrackerState | null {
-  if (typeof window === 'undefined') return null
-  try {
-    const stored = window.localStorage.getItem(STORAGE_KEY)
-    if (!stored) return null
-    return reviveState(JSON.parse(stored))
-  } catch {
-    return null
-  }
-}
-
-function writeStoredState(state: TrackerState) {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-  } catch {
-    /* ignore quota errors */
   }
 }
 
@@ -245,11 +143,19 @@ export function useTracker() {
   const [loading, setLoading] = useState(true)
   const [syncError, setSyncError] = useState<string | null>(null)
   const [modal, setModal] = useState<ModalInfo | null>(null)
-  const stateRef = useRef(state)
 
-  useEffect(() => {
-    stateRef.current = state
-  }, [state])
+  const refreshFromSupabase = useCallback(async () => {
+    if (!isSupabaseConfigured) return
+    setSyncError(null)
+    try {
+      const remoteState = await loadFromSupabase()
+      setState((prev) => ({ ...remoteState, view: prev.view, selectedDate: prev.selectedDate, completedAlerts: prev.completedAlerts }))
+    } catch (error) {
+      console.error(error)
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      setSyncError(`Не получилось загрузить задачи из Supabase: ${message}`)
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -258,35 +164,23 @@ export function useTracker() {
       setLoading(true)
       setSyncError(null)
 
-      const storedState = readStoredState()
-      if (storedState && !cancelled) {
-        setState((prev) => ({
-          ...storedState,
-          view: prev.view,
-          selectedDate: storedState.selectedDate ?? prev.selectedDate,
-          completedAlerts: storedState.completedAlerts ?? prev.completedAlerts,
-        }))
-      }
-
       if (isSupabaseConfigured) {
         try {
-          const remoteState = applyCompletionCache(await loadFromSupabase(), readCompletionCache())
+          const remoteState = await loadFromSupabase()
           if (!cancelled) {
-            setState((prev) => {
-              const next = {
-                ...remoteState,
-                view: prev.view,
-                selectedDate: prev.selectedDate,
-                completedAlerts: Array.from(new Set([...remoteState.completedAlerts, ...prev.completedAlerts])),
-              }
-              writeStoredState(next)
-              return next
-            })
+            setState((prev) => ({ ...remoteState, view: prev.view, selectedDate: prev.selectedDate, completedAlerts: prev.completedAlerts }))
           }
         } catch (error) {
           console.error(error)
           const message = error instanceof Error ? error.message : 'Unknown error'
           if (!cancelled) setSyncError(`Не получилось загрузить задачи из Supabase: ${message}`)
+        }
+      } else {
+        try {
+          const stored = localStorage.getItem(STORAGE_KEY)
+          if (stored && !cancelled) setState(reviveState(JSON.parse(stored)))
+        } catch {
+          /* ignore corrupt storage */
         }
       }
 
@@ -303,56 +197,49 @@ export function useTracker() {
     }
   }, [])
 
-  // Always keep a local copy. It prevents a refresh from showing empty progress
-  // while Supabase is still loading or temporarily unavailable.
   useEffect(() => {
-    if (!hydrated) return
-    writeStoredState(state)
-  }, [state, hydrated])
-
-  // Keep open tabs/devices fresh when Supabase Realtime is enabled for the project.
-  useEffect(() => {
-    if (!hydrated || !supabase) return
+    if (!supabase || !isSupabaseConfigured) return
     const client = supabase
-    let cancelled = false
-    let timer: ReturnType<typeof setTimeout> | null = null
-
-    const refreshFromRemote = () => {
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(async () => {
-        try {
-          const remoteState = applyCompletionCache(await loadFromSupabase(), readCompletionCache())
-          if (cancelled) return
-          setState((prev) => {
-            const next = {
-              ...remoteState,
-              view: prev.view,
-              selectedDate: prev.selectedDate,
-              completedAlerts: Array.from(new Set([...remoteState.completedAlerts, ...prev.completedAlerts])),
-            }
-            writeStoredState(next)
-            return next
-          })
-          setSyncError(null)
-        } catch (error) {
-          console.error(error)
-        }
-      }, 250)
-    }
 
     const channel = client
-      .channel('task-tracker-sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, refreshFromRemote)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pinned_tasks' }, refreshFromRemote)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pinned_completion' }, refreshFromRemote)
+      .channel('tracker-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'tasks' },
+        () => {
+          void refreshFromSupabase()
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pinned_tasks' },
+        () => {
+          void refreshFromSupabase()
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pinned_completion' },
+        () => {
+          void refreshFromSupabase()
+        },
+      )
       .subscribe()
 
     return () => {
-      cancelled = true
-      if (timer) clearTimeout(timer)
-      client.removeChannel(channel)
+      void client.removeChannel(channel)
     }
-  }, [hydrated])
+  }, [refreshFromSupabase])
+
+  // Local fallback only when Supabase variables are not configured.
+  useEffect(() => {
+    if (!hydrated || isSupabaseConfigured) return
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+    } catch {
+      /* ignore quota errors */
+    }
+  }, [state, hydrated])
 
   const update = useCallback((producer: (prev: TrackerState) => TrackerState) => {
     setState(producer)
@@ -402,9 +289,9 @@ export function useTracker() {
     async (category: CategoryId, dateKey: string, raw: string) => {
       const { time, title } = parseTaskInput(raw)
       if (!title) return
-      const taskId = createDbId()
+      const tempId = uid()
       const sortOrder = Date.now()
-      const newTask: Task = { id: taskId, title, time, completed: false }
+      const newTask: Task = { id: tempId, title, time, completed: false }
 
       update((prev) => {
         const day = prev.tasksByDate[dateKey] ?? emptyCategoryMap()
@@ -416,33 +303,30 @@ export function useTracker() {
       })
 
       if (!supabase) return
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('tasks')
-        .insert({ id: taskId, title, task_date: dateKey, task_time: time, category, completed: false, sort_order: sortOrder })
+        .insert({ title, task_date: dateKey, task_time: time, category, completed: false, sort_order: sortOrder })
+        .select('id')
+        .single()
 
-      if (error) {
+      if (error || !data) {
         reportError(error)
         return
       }
 
-      // If the user marked the new task as completed before the insert finished,
-      // persist that latest local state to Supabase as soon as the row exists.
-      const currentDay = stateRef.current.tasksByDate[dateKey] ?? emptyCategoryMap()
-      const currentTask = currentDay[category].find((task) => task.id === taskId)
-      if (currentTask?.completed) {
-        const syncResult = await supabase
-          .from('tasks')
-          .update({ completed: true, updated_at: new Date().toISOString() })
-          .eq('id', taskId)
-          .select('id')
-          .maybeSingle()
-        if (syncResult.error || !syncResult.data) {
-          rememberTaskCompletion(taskId, true)
-          if (syncResult.error) reportError(syncResult.error)
-        } else {
-          forgetTaskCompletion(taskId)
+      update((prev) => {
+        const day = prev.tasksByDate[dateKey] ?? emptyCategoryMap()
+        return {
+          ...prev,
+          tasksByDate: {
+            ...prev.tasksByDate,
+            [dateKey]: {
+              ...day,
+              [category]: day[category].map((t) => (t.id === tempId ? { ...t, id: data.id } : t)),
+            },
+          },
         }
-      }
+      })
     },
     [reportError, update],
   )
@@ -471,28 +355,11 @@ export function useTracker() {
         }
       })
 
-      if (isPinned) rememberPinnedCompletion(dateKey, taskId, nextCompleted)
-      else rememberTaskCompletion(taskId, nextCompleted)
-
       if (!supabase) return
-      if (isPinned) {
-        const result = await supabase
-          .from('pinned_completion')
-          .upsert({ task_date: dateKey, pinned_task_id: taskId, completed: nextCompleted }, { onConflict: 'task_date,pinned_task_id' })
-        if (result.error) reportError(result.error)
-        else forgetPinnedCompletion(dateKey, taskId)
-        return
-      }
-
-      const result = await supabase
-        .from('tasks')
-        .update({ completed: nextCompleted, updated_at: new Date().toISOString() })
-        .eq('id', taskId)
-        .select('id')
-        .maybeSingle()
+      const result = isPinned
+        ? await supabase.from('pinned_completion').upsert({ task_date: dateKey, pinned_task_id: taskId, completed: nextCompleted }, { onConflict: 'task_date,pinned_task_id' })
+        : await supabase.from('tasks').update({ completed: nextCompleted, updated_at: new Date().toISOString() }).eq('id', taskId)
       if (result.error) reportError(result.error)
-      else if (result.data) forgetTaskCompletion(taskId)
-
     },
     [reportError, update],
   )
