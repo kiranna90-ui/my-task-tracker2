@@ -17,6 +17,16 @@ alter table public.tasks add column if not exists completed boolean not null def
 alter table public.tasks add column if not exists sort_order bigint not null default 0;
 alter table public.tasks add column if not exists updated_at timestamptz not null default now();
 
+-- Если таблицы уже были созданы раньше с integer, расширяем sort_order до bigint.
+alter table public.tasks
+alter column sort_order type bigint
+using sort_order::bigint;
+
+alter table public.pinned_tasks
+alter column sort_order type bigint
+using sort_order::bigint;
+
+
 create table if not exists public.pinned_tasks (
   id uuid primary key default gen_random_uuid(),
   title text not null,
@@ -70,13 +80,3 @@ create policy "Allow public read pinned completion" on public.pinned_completion 
 create policy "Allow public insert pinned completion" on public.pinned_completion for insert to anon with check (true);
 create policy "Allow public update pinned completion" on public.pinned_completion for update to anon using (true) with check (true);
 create policy "Allow public delete pinned completion" on public.pinned_completion for delete to anon using (true);
-
-
--- Если таблицы уже были созданы раньше с типом integer, расширяем sort_order до bigint.
-alter table public.tasks
-alter column sort_order type bigint
-using sort_order::bigint;
-
-alter table public.pinned_tasks
-alter column sort_order type bigint
-using sort_order::bigint;

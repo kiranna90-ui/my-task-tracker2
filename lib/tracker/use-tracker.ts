@@ -143,26 +143,69 @@ export function useTracker() {
   const [loading, setLoading] = useState(true)
   const [syncError, setSyncError] = useState<string | null>(null)
   const [modal, setModal] = useState<ModalInfo | null>(null)
-  const pendingMutationCountRef = useRef(0)
-  const queuedRealtimeRefreshRef = useRef(false)
+
   const stateRef = useRef(state)
+  const pendingCompletionRef = useRef(new Map<string, {
+    category: CategoryId
+    dateKey: string
+    isPinned: boolean
+    completed: boolean
+    expiresAt: number
+  }>())
 
   useEffect(() => {
     stateRef.current = state
   }, [state])
 
+  const withPendingCompletions = useCallback((remoteState: TrackerState): TrackerState => {
+    const now = Date.now()
+    const pending = Array.from(pendingCompletionRef.current.entries()).filter(([, value]) => value.expiresAt > now)
+    if (pending.length === 0) return remoteState
+
+    let next = remoteState
+    for (const [taskId, value] of pending) {
+      if (value.isPinned) {
+        const dayCompletion = next.pinnedCompletion[value.dateKey] ?? {}
+        next = {
+          ...next,
+          pinnedCompletion: {
+            ...next.pinnedCompletion,
+            [value.dateKey]: { ...dayCompletion, [taskId]: value.completed },
+          },
+        }
+        continue
+      }
+
+      const day = next.tasksByDate[value.dateKey]
+      if (!day) continue
+      next = {
+        ...next,
+        tasksByDate: {
+          ...next.tasksByDate,
+          [value.dateKey]: {
+            ...day,
+            [value.category]: day[value.category].map((task) =>
+              task.id === taskId ? { ...task, completed: value.completed } : task,
+            ),
+          },
+        },
+      }
+    }
+    return next
+  }, [])
+
   const refreshFromSupabase = useCallback(async () => {
     if (!isSupabaseConfigured) return
     setSyncError(null)
     try {
-      const remoteState = await loadFromSupabase()
+      const remoteState = withPendingCompletions(await loadFromSupabase())
       setState((prev) => ({ ...remoteState, view: prev.view, selectedDate: prev.selectedDate, completedAlerts: prev.completedAlerts }))
     } catch (error) {
       console.error(error)
       const message = error instanceof Error ? error.message : 'Unknown error'
       setSyncError(`Не получилось загрузить задачи из Supabase: ${message}`)
     }
-  }, [])
+  }, [withPendingCompletions])
 
   useEffect(() => {
     let cancelled = false
@@ -173,7 +216,7 @@ export function useTracker() {
 
       if (isSupabaseConfigured) {
         try {
-          const remoteState = await loadFromSupabase()
+          const remoteState = withPendingCompletions(await loadFromSupabase())
           if (!cancelled) {
             setState((prev) => ({ ...remoteState, view: prev.view, selectedDate: prev.selectedDate, completedAlerts: prev.completedAlerts }))
           }
@@ -202,29 +245,35 @@ export function useTracker() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [withPendingCompletions])
 
   useEffect(() => {
     if (!supabase || !isSupabaseConfigured) return
     const client = supabase
 
-    const handleRealtimeChange = () => {
-      // Не перезагружаем данные посреди собственного сохранения.
-      // Иначе можно поймать старое состояние из Supabase: галочка на секунду
-      // ставится, прогресс становится 100%, затем realtime-refresh возвращает
-      // старое значение и галочка исчезает.
-      if (pendingMutationCountRef.current > 0) {
-        queuedRealtimeRefreshRef.current = true
-        return
-      }
-      void refreshFromSupabase()
-    }
-
     const channel = client
       .channel('tracker-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, handleRealtimeChange)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pinned_tasks' }, handleRealtimeChange)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pinned_completion' }, handleRealtimeChange)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'tasks' },
+        () => {
+          void refreshFromSupabase()
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pinned_tasks' },
+        () => {
+          void refreshFromSupabase()
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pinned_completion' },
+        () => {
+          void refreshFromSupabase()
+        },
+      )
       .subscribe()
 
     return () => {
@@ -250,31 +299,6 @@ export function useTracker() {
     console.error(error)
     setSyncError('Не получилось сохранить изменения. Обнови страницу и попробуй ещё раз.')
   }, [])
-
-  const finishSupabaseMutation = useCallback(() => {
-    pendingMutationCountRef.current = Math.max(0, pendingMutationCountRef.current - 1)
-    if (pendingMutationCountRef.current === 0 && queuedRealtimeRefreshRef.current) {
-      queuedRealtimeRefreshRef.current = false
-      void refreshFromSupabase()
-    }
-  }, [refreshFromSupabase])
-
-  const runSupabaseMutation = useCallback(
-    async <T extends { error: unknown }>(mutation: () => Promise<T>): Promise<T | null> => {
-      if (!supabase) return null
-      pendingMutationCountRef.current += 1
-      try {
-        const result = await mutation()
-        if (result.error) {
-          reportError(result.error)
-        }
-        return result
-      } finally {
-        finishSupabaseMutation()
-      }
-    },
-    [finishSupabaseMutation, reportError],
-  )
 
   const getUnpinned = useCallback(
     (category: CategoryId, dateKey: string): Task[] => state.tasksByDate[dateKey]?.[category] ?? [],
@@ -329,46 +353,27 @@ export function useTracker() {
       })
 
       if (!supabase) return
-      const client = supabase
-      pendingMutationCountRef.current += 1
-      try {
-        const { data, error } = await client
+      const { data, error } = await supabase
+        .from('tasks')
+        .insert({ id: tempId, title, task_date: dateKey, task_time: time, category, completed: false, sort_order: sortOrder })
+        .select('id')
+        .single()
+
+      if (error || !data) {
+        reportError(error)
+        return
+      }
+
+      const currentTask = stateRef.current.tasksByDate[dateKey]?.[category]?.find((task) => task.id === tempId)
+      if (currentTask?.completed) {
+        const correction = await supabase
           .from('tasks')
-          .insert({ title, task_date: dateKey, task_time: time, category, completed: false, sort_order: sortOrder })
-          .select('id')
-          .single()
-
-        if (error || !data) {
-          reportError(error)
-          return
-        }
-
-        const currentTempTask = stateRef.current.tasksByDate[dateKey]?.[category]?.find((t) => t.id === tempId)
-        const shouldStayCompleted = !!currentTempTask?.completed
-
-        update((prev) => {
-          const day = prev.tasksByDate[dateKey] ?? emptyCategoryMap()
-          return {
-            ...prev,
-            tasksByDate: {
-              ...prev.tasksByDate,
-              [dateKey]: {
-                ...day,
-                [category]: day[category].map((t) => (t.id === tempId ? { ...t, id: data.id } : t)),
-              },
-            },
-          }
-        })
-
-        if (shouldStayCompleted) {
-          const result = await client.from('tasks').update({ completed: true, updated_at: new Date().toISOString() }).eq('id', data.id)
-          if (result.error) reportError(result.error)
-        }
-      } finally {
-        finishSupabaseMutation()
+          .update({ completed: true, updated_at: new Date().toISOString() })
+          .eq('id', tempId)
+        if (correction.error) reportError(correction.error)
       }
     },
-    [finishSupabaseMutation, reportError, update],
+    [reportError, update],
   )
 
   const toggleTask = useCallback(
@@ -395,19 +400,32 @@ export function useTracker() {
         }
       })
 
-      if (!supabase) return
-      const client = supabase
-      await runSupabaseMutation(async () => {
-        if (isPinned) {
-          return await client.from('pinned_completion').upsert(
-            { task_date: dateKey, pinned_task_id: taskId, completed: nextCompleted, updated_at: new Date().toISOString() },
-            { onConflict: 'task_date,pinned_task_id' },
-          )
-        }
-        return await client.from('tasks').update({ completed: nextCompleted, updated_at: new Date().toISOString() }).eq('id', taskId)
+      pendingCompletionRef.current.set(taskId, {
+        category,
+        dateKey,
+        isPinned,
+        completed: nextCompleted,
+        expiresAt: Date.now() + 3000,
       })
+
+      if (!supabase) return
+      const result = isPinned
+        ? await supabase.from('pinned_completion').upsert({ task_date: dateKey, pinned_task_id: taskId, completed: nextCompleted }, { onConflict: 'task_date,pinned_task_id' })
+        : await supabase.from('tasks').update({ completed: nextCompleted, updated_at: new Date().toISOString() }).eq('id', taskId)
+      if (result.error) {
+        reportError(result.error)
+        return
+      }
+
+      window.setTimeout(() => {
+        const pending = pendingCompletionRef.current.get(taskId)
+        if (pending?.dateKey === dateKey && pending.completed === nextCompleted) {
+          pendingCompletionRef.current.delete(taskId)
+        }
+        void refreshFromSupabase()
+      }, 1200)
     },
-    [runSupabaseMutation, update],
+    [refreshFromSupabase, reportError, update],
   )
 
   const deleteTask = useCallback(
@@ -523,7 +541,7 @@ export function useTracker() {
       if (!supabase) return
       const { data, error } = await supabase
         .from('pinned_tasks')
-        .insert({ title: task.title, task_time: task.time, category, sort_order: Date.now() })
+        .insert({ id: pinnedTempId, title: task.title, task_time: task.time, category, sort_order: Date.now() })
         .select('id')
         .single()
       if (error || !data) {
