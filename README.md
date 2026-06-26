@@ -55,3 +55,4 @@ npm run build
 5. Не загружай `node_modules` и `.next`.
 6. Нажми Commit changes.
 7. В Vercel дождись нового деплоя или нажми Redeploy.
+Supabase connected.
