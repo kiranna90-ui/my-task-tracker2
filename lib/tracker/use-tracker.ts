@@ -10,7 +10,7 @@ import {
   type TrackerState,
   type ViewMode,
 } from './types'
-import { addDays, todayKey, weekDays } from './date-utils'
+import { addDays, dayOffsetFromToday, todayKey, weekDays } from './date-utils'
 import { parseTaskInput, uid } from './parse'
 
 const STORAGE_KEY = 'my-task-tracker:v1'
@@ -357,7 +357,16 @@ export function useTracker() {
 
   /* ------------------------------ navigation ------------------------------ */
 
-  const setView = useCallback((view: ViewMode) => update((p) => ({ ...p, view })), [update])
+  const setView = useCallback(
+    (view: ViewMode) => update((p) => {
+      if (view === 'day') {
+        const offset = dayOffsetFromToday(p.selectedDate)
+        return { ...p, view, selectedDate: offset >= -1 && offset <= 1 ? p.selectedDate : todayKey() }
+      }
+      return { ...p, view }
+    }),
+    [update],
+  )
   const setSelectedDate = useCallback(
     (selectedDate: string) => update((p) => ({ ...p, selectedDate })),
     [update],
@@ -365,6 +374,7 @@ export function useTracker() {
 
   const goPrev = useCallback(() => {
     update((p) => {
+      if (p.view === 'day' && dayOffsetFromToday(p.selectedDate) <= -1) return p
       const step = p.view === 'day' ? addDays(p.selectedDate, -1) : addDays(p.selectedDate, -7)
       return { ...p, selectedDate: step }
     })
@@ -372,6 +382,7 @@ export function useTracker() {
 
   const goNext = useCallback(() => {
     update((p) => {
+      if (p.view === 'day' && dayOffsetFromToday(p.selectedDate) >= 1) return p
       const step = p.view === 'day' ? addDays(p.selectedDate, 1) : addDays(p.selectedDate, 7)
       return { ...p, selectedDate: step }
     })

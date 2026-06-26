@@ -11,15 +11,11 @@ import {
   WEEKDAYS_SHORT,
 } from '@/lib/tracker/date-utils'
 
-function dayStats(tracker: TrackerApi, dateKey: string) {
-  let done = 0
-  let total = 0
-  for (const c of CATEGORIES) {
-    const tasks = tracker.getUnpinned(c.id, dateKey).filter((t) => t.time)
-    total += tasks.length
-    done += tasks.filter((t) => t.completed).length
-  }
-  return { done, total }
+function categoryCounts(tracker: TrackerApi, dateKey: string) {
+  return CATEGORIES.map((category) => ({
+    category,
+    count: tracker.getUnpinned(category.id, dateKey).filter((task) => task.time).length,
+  })).filter((item) => item.count > 0)
 }
 
 function DayCell({
@@ -28,17 +24,14 @@ function DayCell({
   tracker,
   focusedDate,
   onSelect,
-  compact,
 }: {
   dateKey: string
   inMonth: boolean
   tracker: TrackerApi
   focusedDate: string | null
   onSelect: (key: string) => void
-  compact?: boolean
 }) {
-  const { done, total } = dayStats(tracker, dateKey)
-  const percent = total === 0 ? 0 : Math.round((done / total) * 100)
+  const counts = categoryCounts(tracker, dateKey)
   const isToday = dateKey === todayKey()
   const isSelected = dateKey === focusedDate
   const dayNum = fromKey(dateKey).getDate()
@@ -48,7 +41,7 @@ function DayCell({
       type="button"
       onClick={() => onSelect(dateKey)}
       className={cn(
-        'flex flex-col items-center gap-1 rounded-2xl px-1 py-2 transition active:scale-95',
+        'flex min-h-[5.75rem] flex-col items-center gap-1 rounded-2xl px-1 py-2 transition active:scale-95',
         isSelected ? 'btn-gradient text-white shadow' : 'bg-white/55 hover:bg-white/80',
         !inMonth && 'opacity-35',
       )}
@@ -60,39 +53,21 @@ function DayCell({
         )}
       </span>
 
-      {total > 0 ? (
-        <>
+      <span className="mt-1 flex min-h-[3.5rem] w-full flex-col items-center justify-start gap-0.5">
+        {counts.map(({ category, count }) => (
           <span
+            key={category.id}
             className={cn(
-              'text-[10px] font-bold leading-none',
-              isSelected ? 'text-white/90' : 'text-muted-ink',
+              'flex items-center justify-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-extrabold leading-none',
+              isSelected ? 'bg-white/25 text-white' : 'bg-white/65 text-ink',
             )}
+            aria-label={`${category.title}: ${count}`}
           >
-            {done}/{total}
+            <span aria-hidden="true">{category.icon}</span>
+            <span>{count}</span>
           </span>
-          <span
-            className={cn(
-              'h-1 w-full overflow-hidden rounded-full',
-              isSelected ? 'bg-white/40' : 'bg-lavender/50',
-            )}
-          >
-            <span
-              className={cn('block h-full rounded-full', isSelected ? 'bg-white' : 'btn-gradient')}
-              style={{ width: `${percent}%` }}
-            />
-          </span>
-        </>
-      ) : (
-        <span className={cn('text-[10px] leading-none', compact ? 'h-1' : 'h-3.5')} aria-hidden="true" />
-      )}
-
-      {/* indicator dot for days with unpinned tasks */}
-      {total > 0 && (
-        <span
-          className={cn('h-1.5 w-1.5 rounded-full', isSelected ? 'bg-white' : 'bg-pink')}
-          aria-hidden="true"
-        />
-      )}
+        ))}
+      </span>
     </button>
   )
 }

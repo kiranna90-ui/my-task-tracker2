@@ -10,6 +10,7 @@ import {
   formatWeekRange,
   fromKey,
   relativeDayLabel,
+  dayOffsetFromToday,
 } from '@/lib/tracker/date-utils'
 
 const TABS: { id: ViewMode; label: string }[] = [
@@ -39,6 +40,9 @@ export function HeaderCard({
   const periodLabel = view === 'day' ? formatLongDate(selectedDate) : formatWeekRange(selectedDate)
 
   const todayLabel = view === 'day' ? relativeDayLabel(selectedDate) : 'Сегодня'
+  const dayOffset = dayOffsetFromToday(selectedDate)
+  const disablePrev = view === 'day' && dayOffset <= -1
+  const disableNext = view === 'day' && dayOffset >= 1
 
   return (
     <section className="glass-card relative z-30 rounded-[2.25rem] px-6 pb-7 pt-12">
@@ -81,29 +85,37 @@ export function HeaderCard({
       </div>
 
       {/* Period controls */}
-      <div className="mt-4 flex items-center justify-center gap-3">
+      <div className="mt-4 flex items-center justify-center gap-2.5">
         <button
           type="button"
           onClick={onPrev}
-          aria-label="Назад"
-          className="flex h-11 w-11 items-center justify-center rounded-full bg-white/70 text-purple shadow-sm transition hover:bg-white active:scale-95"
+          disabled={disablePrev}
+          aria-label={view === 'week' ? 'Предыдущая неделя' : 'Вчера'}
+          className={
+            'flex h-11 items-center justify-center rounded-full bg-white/70 text-purple shadow-sm transition hover:bg-white active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100 ' +
+            (view === 'week' ? 'min-w-[5.8rem] px-4 text-xs font-extrabold' : 'w-11')
+          }
         >
-          <ChevronLeft className="h-5 w-5" />
+          {view === 'week' ? 'Предыдущая' : <ChevronLeft className="h-5 w-5" />}
         </button>
         <button
           type="button"
           onClick={onToday}
-          className="min-w-36 rounded-full bg-white/70 px-6 py-3 text-sm font-extrabold text-ink shadow-sm transition hover:bg-white active:scale-95"
+          className="min-w-28 rounded-full bg-white/70 px-5 py-3 text-sm font-extrabold text-ink shadow-sm transition hover:bg-white active:scale-95"
         >
           {todayLabel}
         </button>
         <button
           type="button"
           onClick={onNext}
-          aria-label="Вперёд"
-          className="flex h-11 w-11 items-center justify-center rounded-full bg-white/70 text-purple shadow-sm transition hover:bg-white active:scale-95"
+          disabled={disableNext}
+          aria-label={view === 'week' ? 'Следующая неделя' : 'Завтра'}
+          className={
+            'flex h-11 items-center justify-center rounded-full bg-white/70 text-purple shadow-sm transition hover:bg-white active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100 ' +
+            (view === 'week' ? 'min-w-[5.8rem] px-4 text-xs font-extrabold' : 'w-11')
+          }
         >
-          <ChevronRight className="h-5 w-5" />
+          {view === 'week' ? 'Следующая' : <ChevronRight className="h-5 w-5" />}
         </button>
       </div>
     </section>
