@@ -199,8 +199,9 @@ export function useTracker() {
 
   useEffect(() => {
     if (!supabase || !isSupabaseConfigured) return
+    const client = supabase
 
-    const channel = supabase
+    const channel = client
       .channel('tracker-realtime')
       .on(
         'postgres_changes',
@@ -226,7 +227,7 @@ export function useTracker() {
       .subscribe()
 
     return () => {
-      void supabase.removeChannel(channel)
+      void client.removeChannel(channel)
     }
   }, [refreshFromSupabase])
 

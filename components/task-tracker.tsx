@@ -38,7 +38,7 @@ export function TaskTracker() {
 
   return (
     <div className="app-bg min-h-dvh w-full">
-      <main className="mx-auto flex min-h-dvh w-full max-w-[430px] flex-col gap-5 px-4 pb-16">
+      <main className="mx-auto flex min-h-dvh w-full max-w-[430px] flex-col gap-2 px-4 pb-16">
         <Hero />
 
         <HeaderCard
