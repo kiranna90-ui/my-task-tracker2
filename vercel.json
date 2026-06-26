@@ -1,5 +1,5 @@
 {
-  "installCommand": "npm ci --legacy-peer-deps --no-audit --no-fund",
+ "installCommand": "corepack enable && pnpm install --no-frozen-lockfile",
   "buildCommand": "npm run build",
   "framework": "nextjs"
 }
