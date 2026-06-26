@@ -20,7 +20,7 @@ export function Hero() {
           width={380}
           height={425}
           priority
-          className="h-auto w-[318px] translate-y-16 select-none drop-shadow-[0_18px_30px_rgba(150,90,180,0.25)] sm:w-[350px]"
+          className="h-auto w-[318px] translate-y-0 select-none drop-shadow-[0_18px_30px_rgba(150,90,180,0.25)] sm:w-[350px]"
         />
       </div>
     </header>
